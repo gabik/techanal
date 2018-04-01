@@ -172,7 +172,7 @@ def do_ml(ticker):
     df_vals = df_vals.replace([np.inf, -np.inf], 0)
     df_vals.fillna(0, inplace=True)
     back_check = 30
-    last_week = 4
+    last_week = 1
     test_size = 300 + last_week + back_check
     X_train = df_vals.iloc[:-test_size]
     y_train = df['{}_target'.format(ticker)].iloc[:-test_size]
