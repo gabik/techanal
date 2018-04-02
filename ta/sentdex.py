@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 """ Machine learn buy or sell """
 import bs4 as bs
-from statistics import mean
 import datetime as dt
 #import matplotlib.pyplot as plt
 #from matplotlib import style
@@ -14,6 +13,8 @@ import requests
 from collections import Counter
 from sklearn import svm, cross_validation, neighbors
 from sklearn.ensemble import VotingClassifier, RandomForestClassifier
+from Queue import Queue
+from threading import Thread
 import warnings
 warnings.simplefilter('ignore')
 
@@ -168,36 +169,59 @@ def train_model(ticker, tickers, predict_days=1, back_check=30):
                             ('knn', neighbors.KNeighborsClassifier()),
                             ('rfor', RandomForestClassifier())])
     if not any(y_train):
-        return -1, [0]
-
-    clf.fit(X_train, y_train)
-    confidence = clf.score(X_test, y_test)
-    print "Trained {} - confidence={}, Dates:{} - {}. Tested on : {} - {}".format(ticker, confidence, X_train.index[0], X_train.index[-1], X_test.index[0], X_test.index[-1])
+        confidence = -1
+    else:
+        clf.fit(X_train, y_train)
+        confidence = clf.score(X_test, y_test)
+        print "Trained {} - confidence={}, Dates:{} - {}. Tested on : {} - {}".format(ticker, confidence, X_train.index[0], X_train.index[-1], X_test.index[0], X_test.index[-1])
+        pickle.dump(clf, open("stock_dfs/{}_model.pickle".format(ticker), 'wb'))
     pickle.dump(confidence, open("stock_dfs/{}_confidence.pickle".format(ticker), 'wb'))
-    pickle.dump(clf, open("stock_dfs/{}_model.pickle".format(ticker), 'wb'))
 
 
 def do_ml(ticker, back_check=30, predict_days=1):
     confidence = pickle.load(open("stock_dfs/{}_confidence.pickle".format(ticker), 'rb'))
-    df_vals = pd.read_csv("stock_dfs/{}_df_vals.csv".format(ticker), index_col=0)
-    X_week = df_vals.iloc[-predict_days-back_check:-back_check]
-    clf = pickle.load(open("stock_dfs/{}_model.pickle".format(ticker), 'rb'))
-    predictions = clf.predict(X_week)
-    #print('predicted class counts:', Counter(predictions))
+    if confidence > 0:
+        df_vals = pd.read_csv("stock_dfs/{}_df_vals.csv".format(ticker), index_col=0)
+        X_week = df_vals.iloc[-predict_days-back_check:-back_check]
+        clf = pickle.load(open("stock_dfs/{}_model.pickle".format(ticker), 'rb'))
+        predictions = clf.predict(X_week)
+        #print('predicted class counts:', Counter(predictions))
+    else:
+        predictions = [0] * predict_days
     return confidence, predictions
 
 def run_all(back_check=30, predict_days=1, tickers=None):
-    accuracies = []
     actions = {}
+    q = Queue(maxsize=0)
+    rq = Queue(maxsize=0)
+    num_threads = 4
     for ticker in tickers:
-        accuracy, prediction = do_ml(ticker, back_check, predict_days)
+        q.put(ticker)
+    for i in range(num_threads):
+        worker = Thread(target=ml_thread, args=(q, rq, tickers, predict_days, back_check))
+        worker.setDaemon(True)
+        worker.start()
+    q.join()
+    while q.qsize() > 0:
+        ticker, accuracy, prediction = q.get()
         if any(prediction):
             actions[ticker] = [accuracy] + prediction.tolist()
-        if accuracy > -1:
-            accuracies.append(accuracy)
-        print '{} -- accuracy: {} , prediction: {} , mean accuracy: {}'.format(ticker, round(accuracy, 3), prediction, round(mean(accuracies), 3))
     return actions
     
+def ml_thread(q, rq, tickers, predict_days, back_check):
+    while True:
+        ticker = q.get()
+        accuracy, prediction = do_ml(ticker, back_check, predict_days)
+        rq.put((ticker, accuracy, prediction))
+        q.task_done()
+        print '{} -- accuracy: {} , prediction: {}'.format(ticker, round(accuracy, 3), prediction)
+
+def train_thread(q, tickers, predict_days, back_check):
+    while True:
+        ticker = q.get()
+        train_model(ticker, tickers, predict_days, back_check)
+        q.task_done()
+
 
 def play_money_back_check(back_check=30, train=False):
     with open("sp500tickers.pickle","rb") as f:
@@ -205,8 +229,16 @@ def play_money_back_check(back_check=30, train=False):
     df = pd.read_csv('sp500_joined_closes.csv', index_col=0)
     predict_days = 1
     if train:
+        print "Need training.."
+        q = Queue(maxsize=0)
+        num_threads = 2
         for ticker in tickers:
-            train_model(ticker, tickers, predict_days, back_check)
+            q.put(ticker)
+        for i in range(num_threads):
+            worker = Thread(target=train_thread, args=(q, tickers, predict_days, back_check))
+            worker.setDaemon(True)
+            worker.start()
+        q.join()
     back_check += 1
     cash = 1000000
     portion = 0.1
@@ -259,5 +291,5 @@ def play_money_back_check(back_check=30, train=False):
 #save_sp500_tickers()
 #get_data_from_yahoo(True)
 #compile_data()
-c, p = play_money_back_check(30)
-print "Done!!  - Cash: {} , Portfolio: {}".format(c, p)
+#c, p = play_money_back_check(30)
+#print "Done!!  - Cash: {} , Portfolio: {}".format(c, p)
