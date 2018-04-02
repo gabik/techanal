@@ -145,59 +145,48 @@ def extract_featuresets(ticker):
                                               df['{}_6d'.format(ticker)],
                                               df['{}_7d'.format(ticker)]))
 
-    vals = df['{}_target'.format(ticker)].values.tolist()
-    str_vals = [str(i) for i in vals]
-    #print('Data spread:', Counter(str_vals))
-
     df.fillna(0, inplace=True)
     df = df.replace([np.inf, -np.inf], np.nan)
     df.dropna(inplace=True)
+    return df
 
+
+def train_model(ticker, tickers, predict_days=1, back_check=30):
+    df = extract_featuresets(ticker)
     df_vals = df[[t for t in tickers]].pct_change()
     df_vals = df_vals.replace([np.inf, -np.inf], 0)
     df_vals.fillna(0, inplace=True)
-
-    X = df_vals.iloc[:-6].values
-    today_X = df_vals.iloc[-6:].values
-    y = df['{}_target'.format(ticker)].iloc[:-6].values
-    return X, y, df, today_X
-
-
-def do_ml(ticker, back_check=30, predict_days=1):
-    X, y, df, today_X = extract_featuresets(ticker)
-
-    with open("sp500tickers.pickle", "rb") as f:
-        tickers = pickle.load(f)
-    #X_train, X_test, y_train, y_test = cross_validation.train_test_split(X, y, test_size=0.25)
-    df_vals = df[[t for t in tickers]].pct_change()
-    df_vals = df_vals.replace([np.inf, -np.inf], 0)
-    df_vals.fillna(0, inplace=True)
+    df_vals.to_csv("stock_dfs/{}_df_vals.csv".format(ticker))
     last_week = predict_days
     test_size = 300 + last_week + back_check
     X_train = df_vals.iloc[:-test_size]
     y_train = df['{}_target'.format(ticker)].iloc[:-test_size]
     X_test = df_vals.iloc[-test_size:-last_week-back_check]
     y_test = df['{}_target'.format(ticker)].iloc[-test_size:-last_week-back_check]
-    X_week = df_vals.iloc[-last_week-back_check:-back_check]
 
     clf = VotingClassifier([('lsvc', svm.LinearSVC()),
                             ('knn', neighbors.KNeighborsClassifier()),
                             ('rfor', RandomForestClassifier())])
-
     if not any(y_train):
         return -1, [0]
 
     clf.fit(X_train, y_train)
     confidence = clf.score(X_test, y_test)
+    print "Trained {} - confidence={}, Dates:{} - {}. Tested on : {} - {}".format(ticker, confidence, X_train.index[0], X_train.index[-1], X_test.index[0], X_test.index[-1])
+    pickle.dump(confidence, open("stock_dfs/{}_confidence.pickle".format(ticker), 'wb'))
+    pickle.dump(clf, open("stock_dfs/{}_model.pickle".format(ticker), 'wb'))
+
+
+def do_ml(ticker, back_check=30, predict_days=1):
+    confidence = pickle.load(open("stock_dfs/{}_confidence.pickle".format(ticker), 'rb'))
+    df_vals = pd.read_csv("stock_dfs/{}_df_vals.csv".format(ticker), index_col=0)
+    X_week = df_vals.iloc[-predict_days-back_check:-back_check]
+    clf = pickle.load(open("stock_dfs/{}_model.pickle".format(ticker), 'rb'))
     predictions = clf.predict(X_week)
     #print('predicted class counts:', Counter(predictions))
     return confidence, predictions
 
-def run_all(back_check=30, predict_days=1):
-    with open("sp500tickers.pickle","rb") as f:
-        tickers = pickle.load(f)
-    tickers = ['XEC']
-    
+def run_all(back_check=30, predict_days=1, tickers=None):
     accuracies = []
     actions = {}
     for ticker in tickers:
@@ -210,12 +199,17 @@ def run_all(back_check=30, predict_days=1):
     return actions
     
 
-def play_money_back_check(back_check=30):
-    back_check += 1
+def play_money_back_check(back_check=30, train=False):
+    with open("sp500tickers.pickle","rb") as f:
+        tickers = pickle.load(f)
     df = pd.read_csv('sp500_joined_closes.csv', index_col=0)
+    predict_days = 1
+    if train:
+        for ticker in tickers:
+            train_model(ticker, tickers, predict_days, back_check)
+    back_check += 1
     cash = 1000000
     portion = 0.1
-    predict_days = 1
     stop_loss = 0.95
     take_profit = 1.02
     portfolio = {}
@@ -223,7 +217,7 @@ def play_money_back_check(back_check=30):
         back_check -= 1
         today = df.index[-back_check-predict_days]
         print "Modelling {}".format(today)
-        actions = run_all(back_check, predict_days)
+        actions = run_all(back_check, predict_days, tickers)
         scores = {k:v for k,v in {k: v[0] * sum(v[1:]) for k,v in actions.items()}.items() if abs(v) > 0.5}
         if scores:
             for k,v in scores.items():
@@ -258,10 +252,12 @@ def play_money_back_check(back_check=30):
                 print "Sell {} - {} : {} -> {} x {}  = {} ==> {}".format(k, today, buy_price, price, buy_stocks, profit, cash)
             else:
                 print "Hold {} - {} : {} -> {} x {}  = {} ==> {}".format(k, today, buy_price, price, buy_stocks, profit, cash)
-            for k in stocks_to_del:
-                del(portfolio[k])
-    return portfolio
+        for k in stocks_to_del:
+            del(portfolio[k])
+    return cash, portfolio
 
+#save_sp500_tickers()
 #get_data_from_yahoo(True)
 #compile_data()
-p = play_money_back_check(30)
+c, p = play_money_back_check(30)
+print "Done!!  - Cash: {} , Portfolio: {}".format(c, p)
