@@ -48,6 +48,7 @@ def get_data_from_yahoo(reload_sp500=False):
         ticker = str(ticker)
         # just in case your connection breaks, we'd like to save our progress!
         if not os.path.exists('stock_dfs/{}.csv'.format(ticker)):
+            print "Downloading " + ticker
             df = web.DataReader(ticker, 'morningstar', start, end)
             df.reset_index(inplace=True)
             df.set_index("Date", inplace=True)
