@@ -162,7 +162,7 @@ def extract_featuresets(ticker):
     return X, y, df, today_X
 
 
-def do_ml(ticker):
+def do_ml(ticker, back_check=30, predict_days=1):
     X, y, df, today_X = extract_featuresets(ticker)
 
     with open("sp500tickers.pickle", "rb") as f:
@@ -171,8 +171,7 @@ def do_ml(ticker):
     df_vals = df[[t for t in tickers]].pct_change()
     df_vals = df_vals.replace([np.inf, -np.inf], 0)
     df_vals.fillna(0, inplace=True)
-    back_check = 30
-    last_week = 1
+    last_week = predict_days
     test_size = 300 + last_week + back_check
     X_train = df_vals.iloc[:-test_size]
     y_train = df['{}_target'.format(ticker)].iloc[:-test_size]
@@ -193,14 +192,15 @@ def do_ml(ticker):
     #print('predicted class counts:', Counter(predictions))
     return confidence, predictions
 
-def run_all():
+def run_all(back_check=30, predict_days=1):
     with open("sp500tickers.pickle","rb") as f:
         tickers = pickle.load(f)
+    tickers = ['XEC']
     
     accuracies = []
     actions = {}
     for ticker in tickers:
-        accuracy, prediction = do_ml(ticker)
+        accuracy, prediction = do_ml(ticker, back_check, predict_days)
         if any(prediction):
             actions[ticker] = [accuracy] + prediction.tolist()
         if accuracy > -1:
@@ -208,7 +208,59 @@ def run_all():
         print '{} -- accuracy: {} , prediction: {} , mean accuracy: {}'.format(ticker, round(accuracy, 3), prediction, round(mean(accuracies), 3))
     return actions
     
+
+def play_money_back_check(back_check=30):
+    back_check += 1
+    df = pd.read_csv('sp500_joined_closes.csv', index_col=0)
+    cash = 1000000
+    portion = 0.1
+    predict_days = 1
+    stop_loss = 0.95
+    take_profit = 1.02
+    portfolio = {}
+    while back_check > 1:
+        back_check -= 1
+        today = df.index[-back_check-predict_days]
+        print "Modelling {}".format(today)
+        actions = run_all(back_check, predict_days)
+        scores = {k:v for k,v in {k: v[0] * sum(v[1:]) for k,v in actions.items()}.items() if abs(v) > 0.5}
+        if scores:
+            for k,v in scores.items():
+                price = df.loc[today][k]
+                if v > 0 and k not in portfolio:
+                    if cash < 0:
+                        print "Want to Buy {} at {} for {} , but cash is {}".format(k, today, price, cash)
+                    stocks = np.floor((cash * portion) / price)
+                    total = price * stocks
+                    if cash < total:
+                        stocks = np.ceil(cash / price)
+                        total = price * stocks
+                    portfolio[k] = (price, stocks)
+                    cash -= total
+                    print "Buy {} - {} : {} x {} = {} ==> {}".format(k, today, price, stocks, total, cash)
+                if v < 0 and k in portfolio:
+                    buy_price = portfolio[k][0]
+                    buy_stocks = portfolio[k][1]
+                    profit = (price - buy_price) * buy_stocks
+                    cash += price * buy_stocks
+                    del(portfolio[k])
+                    print "Sell on predict {} - {} : {} -> {} x {}  = {} ==> {}".format(k, today, buy_price, price, buy_stocks, profit, cash)
+        stocks_to_del = []
+        for k in portfolio:
+            price = df.loc[today][k]
+            buy_price = portfolio[k][0]
+            buy_stocks = portfolio[k][1]
+            profit = (price - buy_price) * buy_stocks
+            if portfolio[k][0] > price * take_profit or portfolio[k][0] < price * stop_loss:
+                cash += price * buy_stocks
+                stocks_to_del.append(k)
+                print "Sell {} - {} : {} -> {} x {}  = {} ==> {}".format(k, today, buy_price, price, buy_stocks, profit, cash)
+            else:
+                print "Hold {} - {} : {} -> {} x {}  = {} ==> {}".format(k, today, buy_price, price, buy_stocks, profit, cash)
+            for k in stocks_to_del:
+                del(portfolio[k])
+    return portfolio
+
 #get_data_from_yahoo(True)
 #compile_data()
-actions = run_all()
-scores = {k:v for k,v in {k: v[0] * sum(v[1:]) for k,v in actions.items()}.items() if v > 0.7}
+p = play_money_back_check(30)
