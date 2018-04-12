@@ -5,6 +5,7 @@ import datetime
 import requests
 import bs4 as bs
 import pandas as pd
+import stockstats
 from pandas_datareader import data as web
 from sklearn import svm, cross_validation, neighbors
 from sklearn.ensemble import VotingClassifier, RandomForestClassifier

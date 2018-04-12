@@ -32,7 +32,7 @@ def save_sp500_tickers():
     for row in table.findAll('tr')[1:]:
         ticker = row.findAll('td')[0].text
         tickers.append(ticker)
-    with open("sp500tickers.pickle", "wb") as f:
+    with open("stock_dfs/sp500tickers.pickle", "wb") as f:
         pickle.dump(tickers, f)
     return tickers
 
@@ -42,7 +42,7 @@ def get_data_from_yahoo(reload_sp500=False):
     if reload_sp500:
         tickers = save_sp500_tickers()
     else:
-        with open("sp500tickers.pickle", "rb") as f:
+        with open("stock_dfs/sp500tickers.pickle", "rb") as f:
             tickers = pickle.load(f)
     if not os.path.exists('stock_dfs'):
         os.makedirs('stock_dfs')
@@ -64,7 +64,7 @@ def get_data_from_yahoo(reload_sp500=False):
 
 
 def compile_data():
-    with open("sp500tickers.pickle", "rb") as f:
+    with open("stock_dfs/sp500tickers.pickle", "rb") as f:
         tickers = pickle.load(f)
     main_df = pd.DataFrame()
     tickers_to_remove = []
@@ -84,10 +84,10 @@ def compile_data():
         if count % 10 == 0: print(count)
     for ttr in tickers_to_remove:
         tickers.remove(ttr)
-    with open("sp500tickers.pickle", "wb") as f:
+    with open("stock_dfs/sp500tickers.pickle", "wb") as f:
         pickle.dump(tickers, f)
     print(main_df.head())
-    main_df.to_csv('sp500_joined_closes.csv')
+    main_df.to_csv('stock_dfs/sp500_joined_closes.csv')
 
 
 #def visualize_data():
@@ -118,7 +118,7 @@ def compile_data():
 
 def process_data_for_labels(ticker):
     hm_days = 7
-    df = pd.read_csv('sp500_joined_closes.csv', index_col=0)
+    df = pd.read_csv('stock_dfs/sp500_joined_closes.csv', index_col='Date', parse_dates=['Date'])
     tickers = df.columns.values.tolist()
     df.fillna(0, inplace=True)
     for i in range(1, hm_days+1):
@@ -214,7 +214,7 @@ def ml_thread(q, rq, tickers, predict_days, back_check, confidence, models):
         if accuracy > 0:
             prediction = do_ml(ticker, back_check, predict_days, models[ticker])
             rq.put((ticker, accuracy, prediction))
-            print '{} -- accuracy: {} , prediction: {}'.format(ticker, round(accuracy, 3), prediction)
+            #print '{} -- accuracy: {} , prediction: {}'.format(ticker, round(accuracy, 3), prediction)
         q.task_done()
 
 def train_thread(q, tickers, predict_days, back_check):
@@ -225,10 +225,10 @@ def train_thread(q, tickers, predict_days, back_check):
 
 
 def play_money_back_check(back_check=30, train=False):
-    with open("sp500tickers.pickle","rb") as f:
+    with open("stock_dfs/sp500tickers.pickle","rb") as f:
         tickers = pickle.load(f)
 
-    df = pd.read_csv('sp500_joined_closes.csv', index_col=0)
+    df = pd.read_csv('stock_dfs/sp500_joined_closes.csv', index_col='Date', parse_dates=['Date'])
     predict_days = 1
     if train:
         print "Need training.."
@@ -242,9 +242,9 @@ def play_money_back_check(back_check=30, train=False):
         q.join()
     back_check += 1
     cash = 1000000
-    portion = 0.1
+    portions = 10
     stop_loss = 0.95
-    take_profit = 1.02
+    take_profit = 1.05
     portfolio = {}
     confidence = {}
     models = {}
@@ -261,21 +261,27 @@ def play_money_back_check(back_check=30, train=False):
         today = df.index[-back_check-predict_days]
         print "Modelling {}".format(today)
         actions = run_all(back_check, predict_days, tickers, confidence, models)
-        scores = {k:v for k,v in {k: v[0] * sum(v[1:]) for k,v in actions.items()}.items() if abs(v) > 0.5}
+        scores = {k:v for k,v in {k: v[0] * sum(v[1:]) for k,v in actions.items()}.items() if abs(v) > 0.65}
+        just_got = []
         if scores:
             for k,v in scores.items():
                 price = df.loc[today][k]
                 if v > 0 and k not in portfolio:
                     if cash < 0:
                         print "Want to Buy {} at {} for {} , but cash is {}".format(k, today, price, cash)
-                    stocks = np.floor((cash * portion) / price)
-                    total = price * stocks
-                    if cash < total:
-                        stocks = np.ceil(cash / price)
+                    else:
+                        hold = len(portfolio.keys())
+                        spare = portions - hold
+                        portion = np.floor(cash / spare)
+                        stocks = np.floor(portion / price)
                         total = price * stocks
-                    portfolio[k] = (price, stocks)
-                    cash -= total
-                    print "Buy {} - {} : {} x {} = {} ==> {}".format(k, today, price, stocks, total, cash)
+                        if cash < total:
+                            stocks = np.ceil(cash / price)
+                            total = price * stocks
+                        portfolio[k] = (price, stocks)
+                        cash -= total
+                        just_got.append(k)
+                        print "Buy {} - {} : {} x {} = {} ==> {}".format(k, today, price, stocks, total, cash)
                 if v < 0 and k in portfolio:
                     buy_price = portfolio[k][0]
                     buy_stocks = portfolio[k][1]
@@ -294,13 +300,15 @@ def play_money_back_check(back_check=30, train=False):
                 stocks_to_del.append(k)
                 print "Sell {} - {} : {} -> {} x {}  = {} ==> {}".format(k, today, buy_price, price, buy_stocks, profit, cash)
             else:
-                print "Hold {} - {} : {} -> {} x {}  = {} ==> {}".format(k, today, buy_price, price, buy_stocks, profit, cash)
+                if k not in just_got:
+                    print "Hold {} - {} : {} -> {} x {}  = {} ==> {}".format(k, today, buy_price, price, buy_stocks, profit, cash)
         for k in stocks_to_del:
             del(portfolio[k])
-    return cash, portfolio
+    last_prices = df.iloc[-1]
+    return cash, portfolio, last_prices
 
 #save_sp500_tickers()
 #get_data_from_yahoo(True)
 #compile_data()
-#c, p = play_money_back_check(30)
+#c, p, l = play_money_back_check(30)
 #print "Done!!  - Cash: {} , Portfolio: {}".format(c, p)
